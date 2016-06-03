@@ -1,5 +1,11 @@
-pwd()
-cd("H:/revisiting_mp_conditions/")
+#  Copyright 2016, Mehdi Madani
+#  This Source Code Form is subject to the terms of the GNU GPL version 3
+#  If a copy of the MPL was not distributed with this
+#  file, You can obtain one at http://www.gnu.org/licenses/gpl-3.0.en.html
+#############################################################################
+
+#pwd()
+#cd("H:/revisiting_mp_conditions/")
 
 using JuMP,  DataFrames, DataArrays, CPLEX #, Gurobi, Cbc
 include("dam_utils.jl")
