@@ -1,4 +1,4 @@
-#  Copyright 2016, Mehdi Madani
+#  Copyright 2016, Mehdi Madani, Mathieu Van Vyve
 #  This Source Code Form is subject to the terms of the GNU GENERAL PUBLIC LICENSE version 3
 #  If a copy of the GPL version 3 was not distributed with this
 #  file, You can obtain one at http://www.gnu.org/licenses/gpl-3.0.en.html
@@ -10,11 +10,11 @@
 using JuMP,  DataFrames, DataArrays, CPLEX #, Gurobi, Cbc
 include("dam_utils.jl")
 
-#method_type = "benders_classic"
-method_type = "benders_modern"
-#method_type = "primal-dual"
-#method_type = "mp_relaxed"
-mic_activation=0
+#method_type = "benders_classic"    # 'classic' version of the Benders decomposition described in Section 5, see Theorems 5 and 6)
+method_type = "benders_modern"      # 'modern' version of the Benders decomposition described in Section 5, see Theorem 7. N.B. requires a solver supporting locally valid cuts callbacks
+#method_type = "primal-dual"        # When "mic_activation" below is set to 0, it correponds to the formulation 'MarketClearing-MPC' (64)-(78) in the paper, given 'as is' to the solver
+#method_type = "mp_relaxed"         # Solves the primal only (by decoupling it from the "dual"). Hence, MP conditions + other equilibrium conditions are not all enforced in that case. For comparison purposes.
+mic_activation = 0                  # if set to 1, it applies to the "primal-dual" formulation the modifications described in Section 3.3 to handle minimum income conditions as in OMIE-PCR, i.e. setting fixed costs to 0 in the objective, etc
 
 if method_type != "primal-dual" &&  mic_activation != 0
   error("ERROR: OMIE complex orders with a minimum income condition only handled with the primal-dual method type")
@@ -32,12 +32,12 @@ for(ssid in 1:10)
 solutions = Array{damsol}(1)
 solutions_u = Array{Vector{Float64}}(1)
 
-areas=readtable(string("./data/daminst-", ssid,"/areas.csv"))
-periods=readtable(string("./data/daminst-", ssid,"/periods.csv"))
-hourly=readtable(string("./data/daminst-", ssid,"/hourly_quad.csv"))
-mp_headers=readtable(string("./data/daminst-", ssid,"/mp_headers.csv"))
-mp_hourly=readtable(string("./data/daminst-", ssid,"/mp_hourly.csv"))
-line_capacities=readtable(string("./data/daminst-", ssid,"/line_cap.csv"))
+areas=readtable(string("./data/daminst-", ssid,"/areas.csv"))                   # list of bidding zones
+periods=readtable(string("./data/daminst-", ssid,"/periods.csv"))               # list of periods considered
+hourly=readtable(string("./data/daminst-", ssid,"/hourly_quad.csv"))            # classical demand and offer bid curves
+mp_headers=readtable(string("./data/daminst-", ssid,"/mp_headers.csv"))         # MP bids: location, fixed cost, variable cost
+mp_hourly=readtable(string("./data/daminst-", ssid,"/mp_hourly.csv"))           # the different bid curves associated to a MP bid
+line_capacities=readtable(string("./data/daminst-", ssid,"/line_cap.csv"))      # tranmission capacities of lines. as of now, a simple "ATC" (i.e. transportation) model is used to describe the transmission netwwork, though any linear network model could be used
 
 if mic_activation == 1
   FC_copy = mp_headers[:,:FC]
@@ -46,14 +46,14 @@ end
 
 mydata = damdata(areas, periods, hourly, mp_headers, mp_hourly, line_capacities)
 
-areas=Array(areas)
-periods=Array(periods)
+areas = Array(areas)
+periods = Array(periods)
 
-nbHourly=nrow(hourly)
-nbMp=nrow(mp_headers)
-nbMpHourly=nrow(mp_hourly)
-nbAreas=length(areas)
-nbPeriods=length(periods)
+nbHourly = nrow(hourly)
+nbMp = nrow(mp_headers)
+nbMpHourly = nrow(mp_hourly)
+nbAreas = length(areas)
+nbPeriods = length(periods)
 
 # big-M's computation
 bigM = zeros(Float64, nbMp)
@@ -71,36 +71,37 @@ m = Model(solver=CplexSolver(CPX_PARAM_EPGAP=1e-8, CPX_PARAM_EPAGAP=1e-8, CPX_PA
 #m = Model(solver = GurobiSolver(BranchDir=-1, MIPGap=1e-9, MIPGapAbs=1e-9, IntFeasTol=1e-9, TimeLimit=600)) #Method=1,
 #m = Model(solver = CbcSolver(integerTolerance=1e-9, ratioGap=1e-9, allowableGap=1e-9 ))
 
-@variable(m, 0<= x[1:nbHourly] <=1)
-@variable(m, u[1:nbMp], Bin)
-@variable(m, xh[1:nbMpHourly])
+@variable(m, 0<= x[1:nbHourly] <=1) # variables denoted 'x_i' in the paper
+@variable(m, u[1:nbMp], Bin)        # variables u_c
+@variable(m, xh[1:nbMpHourly])      # variables x_hc, indexed below with the symbol 'h'
 @variable(m, 0<= f[areas, areas, periods] <= 0) # by default/at declaration, a line doesn't exist, though non-zero upper bounds on flows are set later for existing lines with non zero capacity
 
 for i in 1:nrow(line_capacities)
-    setupperbound(f[line_capacities[i,:from], line_capacities[i,:too] , line_capacities[i,:t] ], line_capacities[i,:linecap] ) #
+    setupperbound(f[line_capacities[i,:from], line_capacities[i,:too] , line_capacities[i,:t] ], line_capacities[i,:linecap] ) # setting transmission line capacities
 end
 
 @constraint(m, mp_control_upperbound[h=1:nbMpHourly, c=1:nbMp;  mp_hourly[h,:MP] == mp_headers[c,:MP]],
-                xh[h] <= u[c]) #dual variable is shmax[h]
+                xh[h] <= u[c]) # constraint (3) or (67), dual variable is shmax[h]
 @constraint(m, mp_control_lowerbound[h=1:nbMpHourly, c=1:nbMp;  mp_hourly[h,:MP] == mp_headers[c,:MP]],
-                xh[h] >= mp_hourly[h,:AR]*u[c]) #dual variable is shmin[h]
+                xh[h] >= mp_hourly[h,:AR]*u[c]) # constraint (4) or (68), dual variable is shmin[h]
 
 
-#Objective: maximize welfare
-obj = dot(x,(hourly[:,:QI].data).*(hourly[:,:PI0].data)) +  dot(xh,(mp_hourly[:,:QH].data).*(mp_hourly[:,:PH].data)) - dot(u, mp_headers[:, :FC])# #this adds the sum over hourly bids of bid-price*bid-quantity*x
+# Objective: maximizing welfare -> see (1) or (64)
+obj = dot(x,(hourly[:,:QI].data).*(hourly[:,:PI0].data)) +  dot(xh,(mp_hourly[:,:QH].data).*(mp_hourly[:,:PH].data)) - dot(u, mp_headers[:, :FC])
 @objective(m, Max,  obj)
 
+# balance constraint (6) or (70) specialized to a so-called 'ATC network model' (i.e. transportation model)
 @constraint(m, balance[loc in areas, t in periods],
 sum{x[i]*hourly[i, :QI], i=1:nbHourly; hourly[i, :LI] == loc && hourly[i, :TI]==t }
 +
-sum{xh[h]*mp_hourly[h, :QH], h=1:nbMpHourly; mp_hourly[h,:LH] == loc && mp_hourly[h, :TH]==t } #doensét change any thing here: mphourly_loc replacing ... mp_headers[mp_hourly[h,:MP], :LC]
+sum{xh[h]*mp_hourly[h, :QH], h=1:nbMpHourly; mp_hourly[h,:LH] == loc && mp_hourly[h, :TH]==t }
 ==
 sum{f[loc_orig, loc, t] , loc_orig in areas; loc_orig != loc} - sum{f[loc, loc_dest,t] , loc_dest in areas; loc_dest != loc}
 )
 
 
 if method_type != "primal-dual"
-mdual = Model(solver=CplexSolver(CPX_PARAM_LPMETHOD=2)) #CPX_PARAM_PREIND=0,
+mdual = Model(solver=CplexSolver(CPX_PARAM_LPMETHOD=2))
 #mdual = Model(solver = GurobiSolver(BranchDir=-1, MIPGap=1e-9, MIPGapAbs=1e-9, IntFeasTol=1e-9, TimeLimit=600)) #Method=1,
 #mdual = Model(solver = CbcSolver(integerTolerance=1e-9, ratioGap=1e-9, allowableGap=1e-9 ))
 else mdual = m
@@ -118,7 +119,7 @@ end
 if method_type != "primal-dual"
   @constraint(mdual, mpsurplus[c=1:nbMp], sc[c] - sum{(shmax[h] - mp_hourly[h,:AR]*shmin[h]), h=1:nbMpHourly; mp_hourly[h,:MP] == mp_headers[c, :MP]} + mp_headers[c,:FC] >= 0)
 elseif method_type == "primal-dual"
-  @constraint(mdual, mpsurplus[c=1:nbMp], sc[c] - sum{(shmax[h] - mp_hourly[h,:AR]*shmin[h]), h=1:nbMpHourly; mp_hourly[h,:MP] == mp_headers[c, :MP]} + mp_headers[c,:FC] + bigM[c]*(1-u[c]) >= 0) #
+  @constraint(mdual, mpsurplus[c=1:nbMp], sc[c] - sum{(shmax[h] - mp_hourly[h,:AR]*shmin[h]), h=1:nbMpHourly; mp_hourly[h,:MP] == mp_headers[c, :MP]} + mp_headers[c,:FC] + bigM[c]*(1-u[c]) >= 0) # constraint (76)
 end
 
 @constraint(mdual, flowdual[loc1 in areas, loc2 in areas, t in periods], price[loc2, t] - price[loc1, t] <= v[loc1, loc2, t])
@@ -146,8 +147,8 @@ if method_type == "benders_modern"
     objval=cbgetnodeobjval(cb)
     if dualobjval > objval + tol
       println("This primal solution is not valid, and is cut off ...")
-      @lazyconstraint(cb, sum{(1-u[c]), c=1:nbMp; uval[c] == 1} + sum{u[c], c=1:nbMp; uval[c] == 0}  >= 1)   # globally valid 'no-good cut'
-      @lazyconstraint(cb, sum{(1-u[c]), c=1:nbMp; uval[c] == 1}  >= 1, localcut=true)   # locally valid strengthened cut
+      @lazyconstraint(cb, sum{(1-u[c]), c=1:nbMp; uval[c] == 1} + sum{u[c], c=1:nbMp; uval[c] == 0}  >= 1)   # globally valid 'no-good cut', see Theorem 5
+      @lazyconstraint(cb, sum{(1-u[c]), c=1:nbMp; uval[c] == 1}  >= 1, localcut=true)   # locally valid strengthened cut, see Theorem 7
       cut_count[1] += 1
       println("Cuts added: ", cut_count[1])
       println("node:", getnodecount(m))

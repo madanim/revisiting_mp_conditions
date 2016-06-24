@@ -1,4 +1,4 @@
-#  Copyright 2016, Mehdi Madani
+#  Copyright 2016, Mehdi Madani, Mathieu Van Vyve
 #  This Source Code Form is subject to the terms of the GNU GENERAL PUBLIC LICENSE version 3
 #  If a copy of the GPL version 3 was not distributed with this
 #  file, You can obtain one at http://www.gnu.org/licenses/gpl-3.0.en.html
