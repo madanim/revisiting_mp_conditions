@@ -4,17 +4,17 @@
 #  file, You can obtain one at http://www.gnu.org/licenses/gpl-3.0.en.html
 #############################################################################
 
-#pwd()
-#cd("H:/revisiting_mp_conditions/")
+# pwd()
+# cd("H:/revisiting_mp_conditions_code/")
 
 using JuMP,  DataFrames, DataArrays, CPLEX #, Gurobi, Cbc
 include("dam_utils.jl")
 
-#method_type = "benders_classic"    # 'classic' version of the Benders decomposition described in Section 5, see Theorems 5 and 6)
-method_type = "benders_modern"      # 'modern' version of the Benders decomposition described in Section 5, see Theorem 7. N.B. requires a solver supporting locally valid cuts callbacks
-#method_type = "primal-dual"        # When "mic_activation" below is set to 0, it correponds to the formulation 'MarketClearing-MPC' (64)-(78) in the paper, given 'as is' to the solver
-#method_type = "mp_relaxed"         # Solves the primal only (by decoupling it from the "dual"). Hence, MP conditions + other equilibrium conditions are not all enforced in that case. For comparison purposes.
-mic_activation = 0                  # if set to 1, it applies to the "primal-dual" formulation the modifications described in Section 3.3 to handle minimum income conditions as in OMIE-PCR, i.e. setting fixed costs to 0 in the objective, etc
+# method_type = "benders_classic"    # 'classic' version of the Benders decomposition described in Section 5, see Theorems 5 and 6)
+method_type = "benders_modern"       # 'modern' version of the Benders decomposition described in Section 5, see Theorem 7. N.B. requires a solver supporting locally valid cuts callbacks
+# method_type = "primal-dual"        # When "mic_activation" below is set to 0, it correponds to the formulation 'MarketClearing-MPC' (64)-(78) in the paper, given 'as is' to the solver
+# method_type = "mp_relaxed"         # Solves the primal only (by decoupling it from the "dual"). Hence, MP conditions + other equilibrium conditions are not all enforced in that case. For comparison purposes.
+mic_activation = 0                   # if set to 1, it applies to the "primal-dual" formulation the modifications described in Section 3.3 to handle minimum income conditions as in OMIE-PCR, i.e. setting fixed costs to 0 in the objective, etc
 
 # N.B. Regarding the Benders decompositions:
 # to check the global feasibility (is it in the projection 'G' ?) of a primal feasible solution as described in Theorem 3 (before adding the relevant cuts in case the candidate must be rejected),
@@ -73,8 +73,8 @@ end
 
 m = Model(solver=CplexSolver(CPX_PARAM_EPGAP=1e-8, CPX_PARAM_EPAGAP=1e-8, CPX_PARAM_EPINT=1e-7, CPX_PARAM_TILIM=600, CPX_PARAM_BRDIR=-1, CPX_PARAM_HEURFREQ=-1))
 #, CPX_PARAM_EACHCUTLIM=0, CPX_PARAM_FRACCUTS=-1, CPX_PARAM_EACHCUTLIM=0, CPX_PARAM_LPMETHOD=2 , CPX_PARAM_THREADS=12 #CPX_PARAM_MIPDISPLAY=1, CPX_PARAM_MIPINTERVAL=1
-#m = Model(solver = GurobiSolver(BranchDir=-1, MIPGap=1e-9, MIPGapAbs=1e-9, IntFeasTol=1e-9, TimeLimit=600)) #Method=1,
-#m = Model(solver = CbcSolver(integerTolerance=1e-9, ratioGap=1e-9, allowableGap=1e-9 ))
+# m = Model(solver = GurobiSolver(BranchDir=-1, MIPGap=1e-9, MIPGapAbs=1e-9, IntFeasTol=1e-9, TimeLimit=600)) #Method=1,
+# m = Model(solver = CbcSolver(integerTolerance=1e-9, ratioGap=1e-9, allowableGap=1e-9 ))
 
 @variable(m, 0<= x[1:nbHourly] <=1) # variables denoted 'x_i' in the paper
 @variable(m, u[1:nbMp], Bin)        # variables u_c
