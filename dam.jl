@@ -16,6 +16,11 @@ method_type = "benders_modern"      # 'modern' version of the Benders decomposit
 #method_type = "mp_relaxed"         # Solves the primal only (by decoupling it from the "dual"). Hence, MP conditions + other equilibrium conditions are not all enforced in that case. For comparison purposes.
 mic_activation = 0                  # if set to 1, it applies to the "primal-dual" formulation the modifications described in Section 3.3 to handle minimum income conditions as in OMIE-PCR, i.e. setting fixed costs to 0 in the objective, etc
 
+# N.B. Regarding the Benders decompositions:
+# to check the global feasibility (is it in the projection 'G' ?) of a primal feasible solution as described in Theorem 3 (before adding the relevant cuts in case the candidate must be rejected),
+# constraints (65) and (74)-(78) are checked by minimizing the right-hand side of (65) (the 'dual objective'), subject to constraints (74)-(78) where the values of the u_c given by the 'master program' are used (fixed).
+# For fixed values of the u_c given by the 'master primal program', the terms 'bigM[c]*(1-u[c])' in (76) are included by modifying the right-hand constant terms of the constraints first declared withtout them. These right-hand terms are modified each time a new candidate provided by the master is considered.
+
 if method_type != "primal-dual" &&  mic_activation != 0
   error("ERROR: OMIE complex orders with a minimum income condition only handled with the primal-dual method type")
 end
@@ -92,43 +97,47 @@ obj = dot(x,(hourly[:,:QI].data).*(hourly[:,:PI0].data)) +  dot(xh,(mp_hourly[:,
 
 # balance constraint (6) or (70) specialized to a so-called 'ATC network model' (i.e. transportation model)
 @constraint(m, balance[loc in areas, t in periods],
-sum{x[i]*hourly[i, :QI], i=1:nbHourly; hourly[i, :LI] == loc && hourly[i, :TI]==t }
+sum{x[i]*hourly[i, :QI], i=1:nbHourly; hourly[i, :LI] == loc && hourly[i, :TI]==t } # executed quantities of the 'hourly bids' for a given location 'loc' and time slot 't'
 +
-sum{xh[h]*mp_hourly[h, :QH], h=1:nbMpHourly; mp_hourly[h,:LH] == loc && mp_hourly[h, :TH]==t }
+sum{xh[h]*mp_hourly[h, :QH], h=1:nbMpHourly; mp_hourly[h,:LH] == loc && mp_hourly[h, :TH]==t } # executed quantities of the 'hourly bids related to the MP bids' for a given location 'loc' and time slot 't'
 ==
-sum{f[loc_orig, loc, t] , loc_orig in areas; loc_orig != loc} - sum{f[loc, loc_dest,t] , loc_dest in areas; loc_dest != loc}
+sum{f[loc_orig, loc, t] , loc_orig in areas; loc_orig != loc} - sum{f[loc, loc_dest,t] , loc_dest in areas; loc_dest != loc} # balance of inbound and outbound flows at a given location 'loc' at time 't'
 )
 
 
 if method_type != "primal-dual"
-mdual = Model(solver=CplexSolver(CPX_PARAM_LPMETHOD=2))
-#mdual = Model(solver = GurobiSolver(BranchDir=-1, MIPGap=1e-9, MIPGapAbs=1e-9, IntFeasTol=1e-9, TimeLimit=600)) #Method=1,
-#mdual = Model(solver = CbcSolver(integerTolerance=1e-9, ratioGap=1e-9, allowableGap=1e-9 ))
-else mdual = m
+  mdual = Model(solver=CplexSolver(CPX_PARAM_LPMETHOD=2))
+# mdual = Model(solver = GurobiSolver(BranchDir=-1, MIPGap=1e-9, MIPGapAbs=1e-9, IntFeasTol=1e-9, TimeLimit=600)) #Method=1,
+# mdual = Model(solver = CbcSolver(integerTolerance=1e-9, ratioGap=1e-9, allowableGap=1e-9 ))
+  else mdual = m
 end
 
-@variable(mdual, s[1:nbHourly] >=0)
-@variable(mdual, sc[1:nbMp] >=0)
-@variable(mdual, shmax[1:nbMpHourly] >=0)
-@variable(mdual, shmin[1:nbMpHourly] >=0)
-@variable(mdual, price[areas, periods])
-@variable(mdual, v[areas, areas, periods] >=0)
+@variable(mdual, s[1:nbHourly] >=0) # variables s_i, corresponding to the economic surplus of the hourly order 'i', see Lemma 1
+@variable(mdual, sc[1:nbMp] >=0)    # variables s_c, corresponding to the overall economic surplus associated with the MP order 'c'
+@variable(mdual, shmax[1:nbMpHourly] >=0) # see Lemmas 2 and 3 for the interpretation of s^max_hc
+@variable(mdual, shmin[1:nbMpHourly] >=0) # see Lemmas 2 and 3 for the interpretation of s^min_hc
+@variable(mdual, price[areas, periods]) # price variables denoted pi_{l,t} in the paper
+@variable(mdual, v[areas, areas, periods] >=0) # dual variables of the line capacity constraints
 
-@constraint(mdual, hourlysurplus[i=1:nbHourly], s[i] + hourly[i,:QI]*price[hourly[i,:LI], hourly[i,:TI]] >= hourly[i,:QI]*hourly[i,:PI0])
-@constraint(mdual, mphourlysurplus[h=1:nbMpHourly], (shmax[h] - shmin[h]) +  mp_hourly[h,:QH]*price[mp_hourly[h,:LH], mp_hourly[h,:TH]] == mp_hourly[h,:QH]*mp_hourly[h,:PH])
+@constraint(mdual, hourlysurplus[i=1:nbHourly], s[i] + hourly[i,:QI]*price[hourly[i,:LI], hourly[i,:TI]] >= hourly[i,:QI]*hourly[i,:PI0]) # constraint (11) or (74)
+@constraint(mdual, mphourlysurplus[h=1:nbMpHourly], (shmax[h] - shmin[h]) +  mp_hourly[h,:QH]*price[mp_hourly[h,:LH], mp_hourly[h,:TH]] == mp_hourly[h,:QH]*mp_hourly[h,:PH]) # constraint (12) or (75)
 if method_type != "primal-dual"
+  # With the Benders decomposition approach (classic or modern), the term  bigM[c]*(1-u[c]) of constraint (76) is first 'omitted', but the right-hand constant term is adapted later accordingly, when solving this 'dual worker program', depending on the values of u_c, see N.B. lines 19-22 above regarding the Benders decompositions
   @constraint(mdual, mpsurplus[c=1:nbMp], sc[c] - sum{(shmax[h] - mp_hourly[h,:AR]*shmin[h]), h=1:nbMpHourly; mp_hourly[h,:MP] == mp_headers[c, :MP]} + mp_headers[c,:FC] >= 0)
 elseif method_type == "primal-dual"
-  @constraint(mdual, mpsurplus[c=1:nbMp], sc[c] - sum{(shmax[h] - mp_hourly[h,:AR]*shmin[h]), h=1:nbMpHourly; mp_hourly[h,:MP] == mp_headers[c, :MP]} + mp_headers[c,:FC] + bigM[c]*(1-u[c]) >= 0) # constraint (76)
+  # constraint (76) if the 'MarketClearing-MPC' formulation is used 'as is':
+  @constraint(mdual, mpsurplus[c=1:nbMp], sc[c] - sum{(shmax[h] - mp_hourly[h,:AR]*shmin[h]), h=1:nbMpHourly; mp_hourly[h,:MP] == mp_headers[c, :MP]} + mp_headers[c,:FC] + bigM[c]*(1-u[c]) >= 0)
 end
 
-@constraint(mdual, flowdual[loc1 in areas, loc2 in areas, t in periods], price[loc2, t] - price[loc1, t] <= v[loc1, loc2, t])
+@constraint(mdual, flowdual[loc1 in areas, loc2 in areas, t in periods], price[loc2, t] - price[loc1, t] <= v[loc1, loc2, t]) # corresponds to constraints (14) or (77) once specialized to the transmission network considered here ('ATC')
 
 if method_type != "primal-dual"
+  # With decompositions, as mentionned above (see lines 19-22), the right-hand side of (65) is minimized subject to (74)-(78) and then checked against the left-hand side, hence the present dual objective declaration
   @objective(mdual, Min, sum{s[i], i=1:nbHourly} +  sum{sc[c], c=1:nbMp} + sum{v[loc1, loc2, t]*getupperbound(f[loc1, loc2, t]), loc1 in areas, loc2 in areas, t in periods})
 elseif method_type == "primal-dual"
-  @constraint(m, obj >= sum{s[i], i=1:nbHourly} +  sum{sc[c], c=1:nbMp} + sum{v[loc1, loc2, t]*getupperbound(f[loc1, loc2, t]), loc1 in areas, loc2 in areas, t in periods} )
+  @constraint(m, obj >= sum{s[i], i=1:nbHourly} +  sum{sc[c], c=1:nbMp} + sum{v[loc1, loc2, t]*getupperbound(f[loc1, loc2, t]), loc1 in areas, loc2 in areas, t in periods} ) # constraint (65) if 'MarketClearing-MPC' is coded 'as is'
   if mic_activation == 1
+    # in case the OMIE-PCR appraoch is considered, as detailed in Section 3.3, the 'ad-hoc' constraints (81) must be added:
     @constraint(mdual, MIC[c=1:nbMp], sc[c] - sum{(mp_hourly[h,:QH]*mp_hourly[h,:PH]*xh[h]), h=1:nbMpHourly; mp_hourly[h,:MP] == mp_headers[c, :MP]} - FC_copy[c] + sum{(mp_hourly[h,:QH]*xh[h]*mp_headers[c,:VC]), h=1:nbMpHourly; mp_hourly[h,:MP] == mp_headers[c, :MP]} + FC_copy[c]*(1-u[c]) >= 0) #
   end
 end
@@ -140,7 +149,7 @@ if method_type == "benders_modern"
   function workercb(cb)
     uval=getvalue(u)
     for c in 1:nbMp
-      JuMP.setRHS(mpsurplus[c], - bigM[c]*(1-uval[c]) - mp_headers[c,:FC] ) # used to activate / deactivate constraints, big-M's pose no problem here but could be avoided if needed
+      JuMP.setRHS(mpsurplus[c], - bigM[c]*(1-uval[c]) - mp_headers[c,:FC] ) # used to write constraints (76) with the values u_c given by the master program, by modifying the right-hand side constant term, see comments at lines 19-22
     end
     statusdual = solve(mdual)
     dualobjval = getobjectivevalue(mdual)
@@ -162,17 +171,16 @@ end
 status = solve(m)
 objval=getobjectivevalue(m)
 
+# Once optimization is over, prices are re-computed ex-post (they could also be saved from within the callback, but let us note that all we need to recoonstruct them are the values of the u_c of a given solution)
 uval_c = getvalue(u)
 if method_type == "benders_modern"
   for c in 1:nbMp
-    JuMP.setRHS(mpsurplus[c], - bigM[c]*(1-uval_c[c]) - mp_headers[c,:FC] ) # used to activate / deactivate constraints, big-M's pose no problem here but could be avoided if needed
+    JuMP.setRHS(mpsurplus[c], - bigM[c]*(1-uval_c[c]) - mp_headers[c,:FC] ) # used to write constraints (76) with the values u_c given by the master program, by modifying the right-hand side constant term, see comments at lines 19-22
   end
   statusdual = solve(mdual)
 end
 
-
-
-if method_type == "benders_classic"
+if method_type == "benders_classic" # As of now, no time limit is specified here for the classic version ...
     uval=getvalue(u)
     tol=1e-4
     for c=1:nbMp
@@ -187,7 +195,7 @@ if method_type == "benders_classic"
       objval=getobjectivevalue(m)
       uval=getvalue(u)
       for c=1:nbMp
-        JuMP.setRHS(mpsurplus[c], - bigM[c]*(1-uval[c]) - mp_headers[c,:FC] )
+        JuMP.setRHS(mpsurplus[c], - bigM[c]*(1-uval[c]) - mp_headers[c,:FC] ) # used to write constraints (76) with the values u_c given by the master program, by modifying the right-hand side constant term, see comments at lines 19-22
       end
       statusdual = solve(mdual)
       dualobjval = getobjectivevalue(mdual)
@@ -197,7 +205,7 @@ if method_type == "benders_classic"
     end
 end
 
-if method_type == "mp_relaxed"
+if method_type == "mp_relaxed" # Re-compute prices for a primal solution in the case MP conditions have been relaxed. No guarentee is given then that all MP conditions *and* other equilibrium conditions are all enforced. For comparison purposes.
   uval=getvalue(u)
   tol=1e-4
   for c=1:nbMp
@@ -228,7 +236,7 @@ maxSlackViolation = sol_quality[1,1]
 nbNodes = MathProgBase.getnodecount(m)
 # Counting the number of cuts of all kinds generated by Cplex, safe user cuts which are internatlly numbered '15' :
 nbSolverCuts = mapreduce(i->CPLEX.get_num_cuts(m.internalModel.inner, i), +, [1:14;]) + mapreduce(i->CPLEX.get_num_cuts(m.internalModel.inner, i), +, [16:18;]) # sole cplex dependent feature
-absgap=MathProgBase.getobjbound(m) - getobjectivevalue(m) #absgap=CPLEX.getobjbound(getInternalModel(m)) - getObjectiveValue(m)
+absgap=MathProgBase.getobjbound(m) - getobjectivevalue(m)
 runtime = MathProgBase.getsolvetime(m)
 
 push!(numTests, [ssid, objval, absgap, maxSlackViolation, cut_count[1], nbSolverCuts, nbNodes, runtime, nbMp, nbMpHourly + nbHourly] )
